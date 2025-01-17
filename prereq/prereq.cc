@@ -1,4 +1,6 @@
-struct Result {
+#include <cstdint>
+struct Result
+{
     float avg[3];
 };
 
@@ -12,7 +14,27 @@ This is the function you need to implement. Quick reference:
 - input: data[c + 3 * x + 3 * nx * y]
 - output: avg[c]
 */
-Result calculate(int ny, int nx, const float *data, int y0, int x0, int y1, int x1) {
-    Result result{{0.0f, 0.0f, 0.0f}};
+Result calculate(int ny, int nx, const float *data, int y0, int x0, int y1, int x1)
+{
+    // silence warning
+    (void)ny;
+    double sum[3] = {0.0,
+                     0.0,
+                     0.0};
+    // amount of pixels in square
+    uint64_t count = (y1 - y0) * (x1 - x0);
+    // sum up pixels in square
+    for (int y = y0; y < y1; y++)
+    {
+        for (int x = x0; x < x1; x++)
+        {
+            for (int c = 0; c < 3; c++)
+            {
+                sum[c] += data[c + 3 * x + 3 * nx * y];
+            }
+        }
+    }
+    // and return average
+    Result result{{(float)(sum[0] / (double)count), (float)(sum[1] / (double)count), (float)(sum[2] / (double)count)}};
     return result;
 }
