@@ -21,25 +21,35 @@ This is the function you need to implement. Quick reference:
 Result segment(int ny, int nx, const float *data)
 {
     double *sums = new double[3 * nx * ny]();
+    double *sums_sq = new double[3 * nx * ny]();
+
     // we sum row-wise, so that we get sums of areas from the top left corner of
-    // the image to the specified pixel
+    // the image to the specified pixel. we also sum squares of each element for
+    // the calculation of the cost of each square
     for (int y = 0; y < ny; y++)
     {
         double sum[3] = {0.0, 0.0, 0.0};
+        double sum_sq[3] = {0.0, 0.0, 0.0};
         for (int x = 0; x < nx; x++)
         {
             for (int c = 0; c < 3; c++)
             {
-                sum[c] += data[c + 3 * x + 3 * nx * y];
+                double pix = data[c + 3 * x + 3 * nx * y];
+                sum[c] += pix;
+                sum_sq[c] += pow(pix, 2.0);
 
                 double prev = y != 0 ? sums[c + 3 * x + 3 * nx * (y - 1)] : 0.0;
+                double prev_sq = y != 0 ? sums_sq[c + 3 * x + 3 * nx * (y - 1)] : 0.0;
 
                 sums[c + 3 * x + 3 * nx * y] = prev + sum[c];
+                sums_sq[c + 3 * x + 3 * nx * y] = prev_sq + sum_sq[c];
             }
         }
     }
     // total sum of pixels in image
     double image_totals[3] = {sums[0 + 3 * (nx - 1) + 3 * (nx) * (ny - 1)], sums[1 + 3 * (nx - 1) + 3 * (nx) * (ny - 1)], sums[2 + 3 * (nx - 1) + 3 * (nx) * (ny - 1)]};
+    // same, but of squared values
+    double image_sq_totals[3] = {sums_sq[0 + 3 * (nx - 1) + 3 * (nx) * (ny - 1)], sums_sq[1 + 3 * (nx - 1) + 3 * (nx) * (ny - 1)], sums_sq[2 + 3 * (nx - 1) + 3 * (nx) * (ny - 1)]};
     double min_error = std::numeric_limits<double>::max();
     Result result{0, 0, 0, 0, {0, 0, 0}, {0, 0, 0}};
 
@@ -47,7 +57,8 @@ Result segment(int ny, int nx, const float *data)
     {
         for (int w = 1; w <= nx; w++)
         {
-            int area_size = h * w;
+            int inner_area = h * w;
+            int outer_area = nx * ny - inner_area;
             // we must have two segments
             if (w == nx && h == ny)
             {
@@ -57,77 +68,76 @@ Result segment(int ny, int nx, const float *data)
             {
                 for (int x = 0; x <= nx - w; x++)
                 {
+                    // indexes of the corners of the inner area
                     int tl = 3 * (x - 1) + 3 * nx * (y - 1);
                     int tr = 3 * (x + w - 1) + 3 * nx * (y - 1);
                     int bl = 3 * (x - 1) + 3 * nx * (h + y - 1);
                     int br = 3 * (x + w - 1) + 3 * nx * (h + y - 1);
 
-                    double area_sums[3];
+                    double outer_sums[3];
+                    double inner_sums[3];
+                    double outer_sq_sums[3];
+                    double inner_sq_sums[3];
+                    double inner_color[3];
+                    double outer_color[3];
+                    double total_error = 0.0;
                     for (int c = 0; c < 3; c++)
                     {
                         // https://ppc-exercises.cs.aalto.fi/static/exercises/is/hint.png
                         // start with area between top left of image and bottom right of area
-                        area_sums[c] = sums[br + c];
+                        inner_sums[c] = sums[br + c];
+                        inner_sq_sums[c] = sums_sq[br + c];
                         // remove area between top left of image and bottom left of area (i.e. remove outer left of area)
                         if (x != 0)
                         {
-                            area_sums[c] -= sums[bl + c];
+                            inner_sums[c] -= sums[bl + c];
+                            inner_sq_sums[c] -= sums_sq[bl + c];
                         }
                         // remove area between top left of image and top right of area (i.e. remove above of area)
                         if (y != 0)
                         {
-                            area_sums[c] -= sums[tr + c];
+                            inner_sums[c] -= sums[tr + c];
+                            inner_sq_sums[c] -= sums_sq[tr + c];
                         }
                         // add back doubly removed section
                         if (x != 0 && y != 0)
                         {
-                            area_sums[c] += sums[tl + c];
+                            inner_sums[c] += sums[tl + c];
+                            inner_sq_sums[c] -= sums_sq[tl + c];
                         }
+
+                        // outer area
+                        outer_sums[c] = image_totals[c] - inner_sums[c];
+                        outer_sq_sums[c] = image_sq_totals[c] - inner_sq_sums[c];
+
+                        // inner colour is average of the innear area
+                        inner_color[c] = inner_sums[c] / (double)inner_area;
+                        // and similarly outer colour is the average of the image, excluding the inner area
+                        outer_color[c] = outer_sums[c] / (double)outer_area;
+
+                        // (x-c)^2 + (y-c)^2 + (z-c)^2 ... can be expanded to
+                        // x^2 + y^2 + z^2 ... - 2 * c * (x+y+z ...) + n * c^2,
+                        // where c is the averaged colour of the area, x-z are
+                        // pixel values, and n is the area size
+                        total_error += inner_sq_sums[c] - 2 * inner_color[c] * inner_sums[c] + inner_area * pow(inner_color[c], 2.0);
+                        total_error += outer_sq_sums[c] - 2 * outer_color[c] * outer_sums[c] + outer_area * pow(outer_color[c], 2.0);
                     }
-                    // inner colour is average of the innear area
-                    double inner_color[3] = {area_sums[0] / (double)area_size, area_sums[1] / (double)area_size, area_sums[2] / (double)area_size};
-                    // and similarly outer colour is the average of the image, excluding the inner area
-                    double outer_color[3] = {(image_totals[0] - area_sums[0]) / (double)(nx * ny - area_size), (image_totals[1] - area_sums[1]) / (double)(nx * ny - area_size), (image_totals[2] - area_sums[2]) / (double)(nx * ny - area_size)};
-                    double total_se = 0.0;
-                    for (int y2 = 0; y2 < ny; y2++)
+
+                    if (total_error < min_error)
                     {
-                        for (int x2 = 0; x2 < nx; x2++)
-                        {
-                            for (int c = 0; c < 3; c++)
-                            {
-                                if (x2 >= x && x2 < x + w && y2 >= y && y2 < y + h)
-                                {
-                                    total_se += pow(inner_color[0] - data[0 + 3 * x2 + 3 * nx * y2], 2.0);
-                                    total_se += pow(inner_color[1] - data[1 + 3 * x2 + 3 * nx * y2], 2.0);
-                                    total_se += pow(inner_color[2] - data[2 + 3 * x2 + 3 * nx * y2], 2.0);
-                                }
-                                else
-                                {
-                                    total_se += pow(outer_color[0] - data[0 + 3 * x2 + 3 * nx * y2], 2.0);
-                                    total_se += pow(outer_color[1] - data[1 + 3 * x2 + 3 * nx * y2], 2.0);
-                                    total_se += pow(outer_color[2] - data[2 + 3 * x2 + 3 * nx * y2], 2.0);
-                                }
-                            }
-                        }
-                    }
-                    if (total_se < min_error)
-                    {
-                        min_error = total_se;
+                        min_error = total_error;
                         result.y0 = y;
                         result.x0 = x;
                         result.y1 = y + h;
                         result.x1 = x + w;
-                        result.inner[0] = (float)inner_color[0];
-                        result.inner[1] = (float)inner_color[1];
-                        result.inner[2] = (float)inner_color[2];
-                        result.outer[0] = (float)outer_color[0];
-                        result.outer[1] = (float)outer_color[1];
-                        result.outer[2] = (float)outer_color[2];
+                        std::copy(inner_color, inner_color + 3, result.inner);
+                        std::copy(outer_color, outer_color + 3, result.outer);
                     }
                 }
             }
         }
     }
     delete[] sums;
+    delete[] sums_sq;
     return result;
 }
