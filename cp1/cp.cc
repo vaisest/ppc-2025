@@ -8,7 +8,7 @@ This is the function you need to implement. Quick reference:
 - correlation between rows i and row j has to be stored in result[i + j*ny]
 - only parts with 0 <= j <= i < ny need to be filled
 */
-void correlate(int ny, int nx, const float *data, float *result)
+void correlate(const int ny, const int nx, const float *data, float *result)
 {
     std::unique_ptr<double[]> norm(new double[ny * nx]);
     // approach as suggested in the tip
