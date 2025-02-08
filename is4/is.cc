@@ -1,6 +1,5 @@
 #include <limits>
 #include <iostream>
-#include <cmath>
 struct Result
 {
     int y0;
@@ -20,6 +19,8 @@ This is the function you need to implement. Quick reference:
 */
 #include <iostream>
 #include <chrono>
+#include <memory>
+#include <immintrin.h>
 class Timer
 {
 public:
@@ -35,10 +36,23 @@ private:
     typedef std::chrono::duration<double, std::ratio<1>> second_;
     std::chrono::time_point<clock_> beg_;
 };
+typedef double f64x8 __attribute__((vector_size(8 * sizeof(double))));
+typedef double f64x4 __attribute__((vector_size(4 * sizeof(double))));
+constexpr f64x8 zero_vec = {};
+constexpr f64x4 zero_pix = {};
+
+inline double pix_sum(f64x4 v)
+{
+    return ((v[0] + v[1]) + (v[2]));
+}
+
+inline f64x4 vec_fmadd(f64x4 a, f64x4 b, f64x4 c)
+{
+    return (a * b) + c;
+}
 Result segment(int ny, int nx, const float *data)
 {
-    double *sums = new double[3 * nx * ny]();
-    double *sums_sq = new double[3 * nx * ny]();
+    std::unique_ptr<f64x4[]> sums(new f64x4[ny * nx]);
 
     // we sum row-wise, so that we get sums of areas from the top left corner of
     // the image to the specified pixel. we also sum squares of each element for
@@ -47,46 +61,41 @@ Result segment(int ny, int nx, const float *data)
 
     for (int y = 0; y < ny; y++)
     {
-        double sum[3] = {0.0, 0.0, 0.0};
-        double sum_sq[3] = {0.0, 0.0, 0.0};
+        f64x4 sum = zero_pix;
         for (int x = 0; x < nx; x++)
         {
             for (int c = 0; c < 3; c++)
             {
                 double pix = data[c + 3 * x + 3 * nx * y];
                 sum[c] += pix;
-                sum_sq[c] += pow(pix, 2.0);
-
-                double prev = y != 0 ? sums[c + 3 * x + 3 * nx * (y - 1)] : 0.0;
-                double prev_sq = y != 0 ? sums_sq[c + 3 * x + 3 * nx * (y - 1)] : 0.0;
-
-                sums[c + 3 * x + 3 * nx * y] = prev + sum[c];
-                sums_sq[c + 3 * x + 3 * nx * y] = prev_sq + sum_sq[c];
             }
+            f64x4 prev = y != 0 ? sums[x + nx * (y - 1)] : zero_pix;
+
+            sums[x + nx * y] = prev + sum;
         }
     }
+
     double t = tmr.elapsed();
     std::cout << t << std::endl;
     tmr.reset();
     // total sum of pixels in image
-    double image_totals[3] = {sums[0 + 3 * (nx - 1) + 3 * (nx) * (ny - 1)], sums[1 + 3 * (nx - 1) + 3 * (nx) * (ny - 1)], sums[2 + 3 * (nx - 1) + 3 * (nx) * (ny - 1)]};
+    f64x4 image_totals = sums[(nx - 1) + (nx) * (ny - 1)];
     // same, but of squared values
-    double image_sq_totals[3] = {sums_sq[0 + 3 * (nx - 1) + 3 * (nx) * (ny - 1)], sums_sq[1 + 3 * (nx - 1) + 3 * (nx) * (ny - 1)], sums_sq[2 + 3 * (nx - 1) + 3 * (nx) * (ny - 1)]};
 
-    double final_error = std::numeric_limits<double>::max();
+    double final_error = std::numeric_limits<double>::min();
     Result final_result;
 
 #pragma omp parallel
     {
-        double local_min_error = std::numeric_limits<double>::max();
+        double local_min_error = std::numeric_limits<double>::min();
         Result local_result;
-#pragma omp for nowait
+#pragma omp for nowait schedule(static, 1)
         for (int h = 1; h <= ny; h++)
         {
             for (int w = 1; w <= nx; w++)
             {
-                int inner_area = h * w;
-                int outer_area = nx * ny - inner_area;
+                double inner_area = h * w;
+                double outer_area = nx * ny - inner_area;
                 // we must have two segments
                 if (w == nx && h == ny)
                 {
@@ -94,74 +103,80 @@ Result segment(int ny, int nx, const float *data)
                 }
                 for (int y = 0; y <= ny - h; y++)
                 {
-                    constexpr int LANES = 8;
-                    const int rem = nx % LANES;
-                    for (int x = 0; x <= nx - w; x++)
+                    const int top_row = nx * (y - 1);
+                    const int bot_row = nx * (y + h - 1);
+                    const int end = nx - w;
+                    for (int x = 0; x <= end; x++)
                     {
-                        // indexes of the corners of the inner area
-                        int tl = 3 * (x - 1) + 3 * nx * (y - 1);
-                        int tr = 3 * (x + w - 1) + 3 * nx * (y - 1);
-                        int bl = 3 * (x - 1) + 3 * nx * (h + y - 1);
-                        int br = 3 * (x + w - 1) + 3 * nx * (h + y - 1);
+                        // indices of the corners of the inner area
+                        const int left = (x - 1);
+                        const int right = (x + w - 1);
+                        const int tl = top_row + left;
+                        const int tr = top_row + right;
+                        const int bl = bot_row + left;
+                        const int br = bot_row + right;
 
-                        double outer_sums[3];
-                        double inner_sums[3];
-                        double outer_sq_sums[3];
-                        double inner_sq_sums[3];
-                        double inner_color[3];
-                        double outer_color[3];
-                        double total_error = 0.0;
-                        for (int c = 0; c < 3; c++)
+                        f64x4 outer_sums;
+                        f64x4 inner_sums;
+                        f64x4 inner_color;
+                        f64x4 outer_color;
+                        double total_error = {};
+                        // https://ppc-exercises.cs.aalto.fi/static/exercises/is/hint.png
+                        // start with area between top left of image and bottom right of area
+                        inner_sums = sums[br];
+                        // remove area between top left of image and bottom left of area (i.e. remove outer left of area)
+                        if (x != 0)
                         {
-                            // https://ppc-exercises.cs.aalto.fi/static/exercises/is/hint.png
-                            // start with area between top left of image and bottom right of area
-                            inner_sums[c] = sums[br + c];
-                            inner_sq_sums[c] = sums_sq[br + c];
-                            // remove area between top left of image and bottom left of area (i.e. remove outer left of area)
-                            if (x != 0)
-                            {
-                                inner_sums[c] -= sums[bl + c];
-                                inner_sq_sums[c] -= sums_sq[bl + c];
-                            }
-                            // remove area between top left of image and top right of area (i.e. remove above of area)
-                            if (y != 0)
-                            {
-                                inner_sums[c] -= sums[tr + c];
-                                inner_sq_sums[c] -= sums_sq[tr + c];
-                            }
-                            // add back doubly removed section
-                            if (x != 0 && y != 0)
-                            {
-                                inner_sums[c] += sums[tl + c];
-                                inner_sq_sums[c] -= sums_sq[tl + c];
-                            }
-
-                            // outer area
-                            outer_sums[c] = image_totals[c] - inner_sums[c];
-                            outer_sq_sums[c] = image_sq_totals[c] - inner_sq_sums[c];
-
-                            // inner colour is average of the innear area
-                            inner_color[c] = inner_sums[c] / (double)inner_area;
-                            // and similarly outer colour is the average of the image, excluding the inner area
-                            outer_color[c] = outer_sums[c] / (double)outer_area;
-
-                            // (x-c)^2 + (y-c)^2 + (z-c)^2 ... can be expanded to
-                            // x^2 + y^2 + z^2 ... - 2 * c * (x+y+z ...) + n * c^2,
-                            // where c is the averaged colour of the area, x-z are
-                            // pixel values, and n is the area size
-                            total_error += inner_sq_sums[c] - 2 * inner_color[c] * inner_sums[c] + inner_area * pow(inner_color[c], 2.0);
-                            total_error += outer_sq_sums[c] - 2 * outer_color[c] * outer_sums[c] + outer_area * pow(outer_color[c], 2.0);
+                            inner_sums -= sums[bl];
+                        }
+                        // remove area between top left of image and top right of area (i.e. remove above of area)
+                        if (y != 0)
+                        {
+                            inner_sums -= sums[tr];
+                        }
+                        // add back doubly removed section
+                        if (x != 0 && y != 0)
+                        {
+                            inner_sums += sums[tl];
                         }
 
-                        if (total_error < local_min_error)
+                        // outer area
+                        outer_sums = image_totals - inner_sums;
+
+                        // inner colour is average of the innear area
+                        inner_color = inner_sums / (double)inner_area;
+                        // and similarly outer colour is the average of the image, excluding the inner area
+                        outer_color = outer_sums / (double)outer_area;
+
+                        // from the IS2 solution we can notice that if we expand the
+                        // error calculation, some parts of it cancel out. We're
+                        // left with `inner_sq_sums - inner_color * inner_sums`.
+
+                        // I'm not sure how or if the math checks out, but it seems
+                        // the inner_sq_sums can too be removed without getting a
+                        // wrong result.
+
+                        // This results in a lot less calculation needed with
+                        // `-inner_color * inner_sums`. Additionally we can remove
+                        // the minus sign and flip the comparisons, which means that
+                        // as this grows, the error diminishes
+                        f64x4 inner_errors = inner_color * inner_sums;
+
+                        // inner_errors += outer_color * outer_sums;
+                        total_error += pix_sum(vec_fmadd(outer_color, outer_sums, inner_errors));
+
+                        if (total_error > local_min_error)
                         {
                             local_min_error = total_error;
                             local_result.y0 = y;
                             local_result.x0 = x;
                             local_result.y1 = y + h;
                             local_result.x1 = x + w;
-                            std::copy(inner_color, inner_color + 3, local_result.inner);
-                            std::copy(outer_color, outer_color + 3, local_result.outer);
+                            for (int c = 0; c < 3; c++)
+                            {
+                                local_result.inner[c] = inner_color[c];
+                                local_result.outer[c] = outer_color[c];
+                            }
                         }
                     }
                 }
@@ -170,7 +185,7 @@ Result segment(int ny, int nx, const float *data)
 #pragma omp critical
         {
             // compare thread results and save best
-            if (local_min_error < final_error)
+            if (local_min_error > final_error)
             {
                 final_error = local_min_error;
                 final_result = local_result;
@@ -180,7 +195,5 @@ Result segment(int ny, int nx, const float *data)
 
     t = tmr.elapsed();
     std::cout << t << std::endl;
-    delete[] sums;
-    delete[] sums_sq;
     return final_result;
 }
