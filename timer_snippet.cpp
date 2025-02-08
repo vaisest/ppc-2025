@@ -7,7 +7,7 @@ public:
     void reset() { beg_ = clock_::now(); }
     double elapsed() const
     {
-        return std::chrono::duration_cast<std::chrono::nanoseconds>(clock_::now() - beg_).count();
+        return std::chrono::duration_cast<second_>(clock_::now() - beg_).count();
     }
 
 private:
