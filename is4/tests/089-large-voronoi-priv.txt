@@ -1,0 +1,3 @@
+timeout 0.5
+precomputed-voronoi 69 71 5 0.1 0.1
+expected-rectangle 0 17 69 71
