@@ -1,5 +1,7 @@
 #include <limits>
 #include <iostream>
+#include <immintrin.h>
+#include <memory>
 struct Result
 {
     int y0;
@@ -10,32 +12,6 @@ struct Result
     float inner[3];
 };
 
-/*
-This is the function you need to implement. Quick reference:
-- x coordinates: 0 <= x < nx
-- y coordinates: 0 <= y < ny
-- color components: 0 <= c < 3
-- input: data[c + 3 * x + 3 * nx * y]
-*/
-#include <iostream>
-#include <chrono>
-#include <memory>
-#include <immintrin.h>
-class Timer
-{
-public:
-    Timer() : beg_(clock_::now()) {}
-    void reset() { beg_ = clock_::now(); }
-    double elapsed() const
-    {
-        return std::chrono::duration_cast<second_>(clock_::now() - beg_).count();
-    }
-
-private:
-    typedef std::chrono::high_resolution_clock clock_;
-    typedef std::chrono::duration<double, std::ratio<1>> second_;
-    std::chrono::time_point<clock_> beg_;
-};
 typedef double f64x8 __attribute__((vector_size(8 * sizeof(double))));
 typedef double f64x4 __attribute__((vector_size(4 * sizeof(double))));
 constexpr f64x8 zero_vec = {};
@@ -50,6 +26,13 @@ inline f64x4 vec_fmadd(f64x4 a, f64x4 b, f64x4 c)
 {
     return (a * b) + c;
 }
+/*
+This is the function you need to implement. Quick reference:
+- x coordinates: 0 <= x < nx
+- y coordinates: 0 <= y < ny
+- color components: 0 <= c < 3
+- input: data[c + 3 * x + 3 * nx * y]
+*/
 Result segment(int ny, int nx, const float *data)
 {
     std::unique_ptr<f64x4[]> sums(new f64x4[ny * nx]);
@@ -57,7 +40,6 @@ Result segment(int ny, int nx, const float *data)
     // we sum row-wise, so that we get sums of areas from the top left corner of
     // the image to the specified pixel. we also sum squares of each element for
     // the calculation of the cost of each square
-    Timer tmr;
 
     for (int y = 0; y < ny; y++)
     {
@@ -75,9 +57,6 @@ Result segment(int ny, int nx, const float *data)
         }
     }
 
-    double t = tmr.elapsed();
-    std::cout << t << std::endl;
-    tmr.reset();
     // total sum of pixels in image
     f64x4 image_totals = sums[(nx - 1) + (nx) * (ny - 1)];
     // same, but of squared values
@@ -193,7 +172,5 @@ Result segment(int ny, int nx, const float *data)
         }
     }
 
-    t = tmr.elapsed();
-    std::cout << t << std::endl;
     return final_result;
 }
