@@ -122,7 +122,7 @@ void correlate(int ny, int nx, const float *data, float *result)
     CHECK(cudaGetLastError());
 
     // performance at larger block sizes seems worse for some reason
-    int block_size_2d = 8;
+    int block_size_2d = 16;
     dim3 block2dSize(block_size_2d, block_size_2d);
     dim3 grid(div_up(ny, block_size_2d), div_up(ny, block_size_2d));
 
