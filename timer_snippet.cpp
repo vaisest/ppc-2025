@@ -16,7 +16,6 @@ private:
     std::chrono::time_point<clock_> beg_;
 };
 
-/// usage:
 // Timer tmr;
 // double t = tmr.elapsed();
 // std::cout << t << std::endl;
