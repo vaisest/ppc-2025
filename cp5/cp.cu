@@ -66,7 +66,18 @@ __global__ void sqrt_div_kernel(float *data, const float *row_sums, const int ny
         data[i] /= row_sums[row];
     }
 }
-__global__ void matmul_kernel(float *data, float *result, const int ny, const int nx)
+__global__ void transpose_copy(float *data, float *transpose, const int ny, const int nx)
+{
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = blockDim.x * gridDim.x;
+    for (int i = index; i < ny * nx; i += stride)
+    {
+        int y = i / nx; // row
+        int x = i % nx; // column
+        transpose[x * ny + y] = data[i];
+    }
+}
+__global__ void matmul_transpose_kernel(float *data, float *result, const int ny, const int nx)
 {
     constexpr size_t M = 8;
     constexpr size_t N = 4;
@@ -92,13 +103,13 @@ __global__ void matmul_kernel(float *data, float *result, const int ny, const in
                 float ys[N];
                 for (size_t v = 0; v < N; v++)
                 {
-                    ys[v] = data[(y + i) * nx + k + v];
+                    ys[v] = data[(k + v) * ny + (y + i)];
                 }
                 for (size_t j = 0; j < jM; j++)
                 {
                     for (size_t v = 0; v < N; v++)
                     {
-                        stuff[i][j] += ys[v] * data[(x + j) * nx + k + v];
+                        stuff[i][j] += ys[v] * data[(k + v) * ny + (x + j)];
                     }
                 }
             }
@@ -109,7 +120,7 @@ __global__ void matmul_kernel(float *data, float *result, const int ny, const in
             {
                 for (size_t j = 0; j < jM; j++)
                 {
-                    stuff[i][j] += data[(y + i) * nx + k] * data[(x + j) * nx + k];
+                    stuff[i][j] += data[k * ny + (y + i)] * data[k * ny + (x + j)];
                 }
             }
         }
@@ -132,6 +143,8 @@ void correlate(int ny, int nx, const float *data, float *result)
     // input data
     float *dataGPU = NULL;
     CHECK(cudaMalloc(&dataGPU, ny * nx * sizeof(float)));
+    float *transposedGPU = NULL;
+    CHECK(cudaMalloc(&transposedGPU, ny * nx * sizeof(float)));
     // row sums, and squared sums used for normalising input
     float *rowsGPU = NULL;
     CHECK(cudaMalloc(&rowsGPU, ny * sizeof(float)));
@@ -161,14 +174,26 @@ void correlate(int ny, int nx, const float *data, float *result)
     sqrt_div_kernel<<<num_blocks, block_size>>>(dataGPU, rowsGPU, ny, nx);
     CHECK(cudaGetLastError());
 
+    // transpose. seems to only take 0.016380 s on the test server for
+    // 12000x12000 and speeds up matrix multiplication quite a bit
+    transpose_copy<<<num_blocks, block_size>>>(dataGPU, transposedGPU, ny, nx);
+    CHECK(cudaGetLastError());
+
     // performance at larger block sizes seems worse for some reason
 
     int size = 16;
     dim3 block(size, size);
     dim3 grid(div_up(ny, size), div_up(ny, size));
 
-    // calculate AA^T
-    matmul_kernel<<<grid, block>>>(dataGPU, resGPU, ny, nx);
+    // Test server M and N:
+    // (4, 2): 1.62701 sec
+    // (4, 4): 1.62746 sec
+    // (4, 8): 1.6904 sec
+    // (8, 2): 1.44815 sec
+    // (8, 4): 1.47318 sec
+    // (8, 6): 5.05893 sec
+    // (8, 8): 4.16878 sec
+    matmul_transpose_kernel<<<grid, block>>>(transposedGPU, resGPU, ny, nx);
     CHECK(cudaGetLastError());
 
     CHECK(cudaMemcpy(result, resGPU, ny * ny * sizeof(float), cudaMemcpyDeviceToHost));
@@ -176,4 +201,5 @@ void correlate(int ny, int nx, const float *data, float *result)
     CHECK(cudaFree(dataGPU));
     CHECK(cudaFree(resGPU));
     CHECK(cudaFree(rowsGPU));
+    CHECK(cudaFree(transposedGPU));
 }
