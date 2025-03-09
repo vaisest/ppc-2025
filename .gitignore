@@ -1,4 +1,5 @@
 prereq
 __pycache__
 freeform_cpu/
+freeform_gpu/
 .vscode/
