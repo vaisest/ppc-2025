@@ -12,9 +12,7 @@ struct Result
     float inner[3];
 };
 
-typedef double f64x8 __attribute__((vector_size(8 * sizeof(double))));
 typedef double f64x4 __attribute__((vector_size(4 * sizeof(double))));
-constexpr f64x8 zero_vec = {};
 constexpr f64x4 zero_pix = {};
 
 inline double pix_sum(f64x4 v)
